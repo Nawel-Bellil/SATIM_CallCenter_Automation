@@ -14,11 +14,11 @@ class Agent(Base):
     name = Column(String(100), nullable=False)
     email = Column(String(100), unique=True, nullable=False)
     status = Column(String(20), default="available")
-    skills = Column(JSON, default=list)
+    skills = Column(JSON, default=list)  # ✅ MUST be JSON, not ARRAY!
     created_at = Column(DateTime, default=datetime.utcnow)
     
     calls = relationship("Call", back_populates="agent")
-
+    
 class Call(Base):
     __tablename__ = "calls"
     
