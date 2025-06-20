@@ -1,0 +1,26 @@
+[
+  {
+    "question": "Comment puis-je contacter le service client SATIM?",
+    "answer": "Vous pouvez contacter le service client SATIM par téléphone, email ou en visitant nos bureaux. Consultez notre page contact pour plus d'informations.",
+    "category": "Contact",
+    "source_url": "https://www.satim.dz/default"
+  },
+  {
+    "question": "Quels sont les horaires d'ouverture de SATIM?",
+    "answer": "SATIM est généralement ouvert du dimanche au jeudi de 8h00 à 17h00. Les horaires peuvent varier selon les services.",
+    "category": "Informations",
+    "source_url": "https://www.satim.dz/default"
+  },
+  {
+    "question": "Comment puis-je effectuer un paiement via SATIM?",
+    "answer": "SATIM propose plusieurs méthodes de paiement électronique. Contactez-nous pour connaître les options disponibles selon votre situation.",
+    "category": "Paiements",
+    "source_url": "https://www.satim.dz/default"
+  },
+  {
+    "question": "Que faire en cas de problème technique?",
+    "answer": "En cas de problème technique, contactez immédiatement notre support technique. Nous vous aiderons à résoudre le problème rapidement.",
+    "category": "Support",
+    "source_url": "https://www.satim.dz/default"
+  }
+]

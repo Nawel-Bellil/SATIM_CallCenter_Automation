@@ -131,7 +131,7 @@ async def ask_question(question: str, caller_phone: str, call_id: int = None, db
         correlation_id=f"question_{call_id or caller_phone}"
     ))
     
-    return {"message": "Question processed", "status": "processing"}
+    return {"message": "Question received and being processed"}
 
 @app.get("/faqs/stats")
 def get_faq_stats(db: Session = Depends(get_db)):
@@ -139,55 +139,66 @@ def get_faq_stats(db: Session = Depends(get_db)):
     faq_bot = FAQBot(db)
     return faq_bot.get_faq_stats()
 
+# Queue and dashboard endpoints
 @app.get("/queue/status")
 def get_queue_status(db: Session = Depends(get_db)):
     """Get current queue status"""
+    from ..models import CallQueue
+    
     queue_items = db.query(CallQueue).filter(
         CallQueue.assigned_agent_id.is_(None)
     ).order_by(CallQueue.priority.desc(), CallQueue.created_at.asc()).all()
     
     return {
         "queue_length": len(queue_items),
-        "items": [
+        "queue_items": [
             {
                 "id": item.id,
                 "caller_phone": item.caller_phone,
                 "priority": item.priority,
-                "wait_time": int((datetime.utcnow() - item.created_at).total_seconds()),
+                "wait_time": (datetime.utcnow() - item.created_at).total_seconds(),
                 "position": idx + 1
             }
             for idx, item in enumerate(queue_items)
         ]
     }
 
-@app.get("/dashboard/metrics")
-def get_dashboard_metrics(db: Session = Depends(get_db)):
-    """Get dashboard metrics"""
-    # Active calls
-    active_calls = db.query(Call).filter(Call.status == "active").count()
+@app.get("/dashboard/stats")
+def get_dashboard_stats(db: Session = Depends(get_db)):
+    """Get dashboard statistics"""
+    from sqlalchemy import func
+    from ..models import CallQueue
     
-    # Available agents
+    # Agent statistics
+    total_agents = db.query(Agent).count()
     available_agents = db.query(Agent).filter(Agent.status == "available").count()
+    busy_agents = db.query(Agent).filter(Agent.status == "busy").count()
     
-    # Queue length
-    queue_length = db.query(CallQueue).filter(
-        CallQueue.assigned_agent_id.is_(None)
-    ).count()
+    # Call statistics
+    active_calls = db.query(Call).filter(Call.status == "active").count()
+    completed_calls = db.query(Call).filter(Call.status == "completed").count()
     
-    # Today's completed calls
-    from datetime import date
-    today = date.today()
-    completed_today = db.query(Call).filter(
-        Call.status == "completed",
-        Call.call_start >= today
-    ).count()
+    # Queue statistics
+    queue_length = db.query(CallQueue).filter(CallQueue.assigned_agent_id.is_(None)).count()
+    
+    # Average call duration
+    avg_duration = db.query(func.avg(Call.duration)).filter(Call.duration.isnot(None)).scalar() or 0
     
     return {
-        "active_calls": active_calls,
-        "available_agents": available_agents,
-        "queue_length": queue_length,
-        "completed_today": completed_today
+        "agents": {
+            "total": total_agents,
+            "available": available_agents,
+            "busy": busy_agents
+        },
+        "calls": {
+            "active": active_calls,
+            "completed": completed_calls,
+            "average_duration": round(avg_duration, 2)
+        },
+        "queue": {
+            "length": queue_length
+        }
     }
 
 if __name__ == "__main__":
-    uvicorn.run("src.api.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

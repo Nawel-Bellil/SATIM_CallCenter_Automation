@@ -1,0 +1,24 @@
+{
+  "scraping_date": "2025-06-20T19:04:37.423137",
+  "total_faqs_scraped": 4,
+  "total_faqs_after_cleaning": 4,
+  "categories": [
+    "Contact",
+    "Informations",
+    "Paiements",
+    "Support"
+  ],
+  "category_counts": {
+    "Contact": 1,
+    "Informations": 1,
+    "Paiements": 1,
+    "Support": 1
+  },
+  "avg_question_length": 45.5,
+  "avg_answer_length": 132.75,
+  "quality_metrics": {
+    "duplicates_removed": 0,
+    "short_answers_removed": 0,
+    "long_answers_removed": 0
+  }
+}

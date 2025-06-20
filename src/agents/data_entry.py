@@ -1,386 +1,247 @@
-# File: src/agents/data_entry.py
 import asyncio
-import re
 import json
+import re
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-import logging
 from sqlalchemy.orm import Session
-from ..models import Call
+import logging
+
+from ..models import Call, Agent
 from ..orchestration.event_bus import event_bus, Event
 
 logger = logging.getLogger(__name__)
 
-class DataEntryAgent:
+class DataEntryAutomator:
+    """Automates data entry from call transcripts"""
+    
     def __init__(self, db: Session):
         self.db = db
         self.extraction_patterns = self.load_extraction_patterns()
-        self.form_templates = self.load_form_templates()
         self.setup_event_handlers()
     
     def setup_event_handlers(self):
         """Setup event handlers for data entry automation"""
-        event_bus.subscribe("transcript_completed", self.extract_information)
-        event_bus.subscribe("transcript_chunk", self.process_real_time_data)
-        event_bus.subscribe("form_submission_requested", self.handle_form_submission)
+        event_bus.subscribe("call_transcript_ready", self.handle_transcript)
+        event_bus.subscribe("call_ended", self.finalize_data_entry)
     
-    def load_extraction_patterns(self) -> Dict[str, Dict[str, str]]:
-        """Load patterns for extracting different types of information"""
+    def load_extraction_patterns(self) -> Dict[str, str]:
+        """Load regex patterns for data extraction"""
         return {
-            "personal_info": {
-                "name": r"(?:my name is|i am|je m'appelle|je suis)\s+([A-Za-z\s]+)",
-                "phone": r"(?:phone|telephone|numero|tel)\s*(?:is|est)?\s*([0-9\s\-\+\(\)]{8,15})",
-                "email": r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})",
-                "address": r"(?:address|adresse|habite|live at)\s*(?:is|est)?\s*([A-Za-z0-9\s,.-]+)",
-                "cin": r"(?:CIN|carte d'identité|identity|numero)\s*(?:is|est)?\s*([0-9]{8})",
-                "age": r"(?:age|âge)\s*(?:is|est)?\s*([0-9]{1,3})"
-            },
-            "banking": {
-                "account_number": r"(?:account|compte)\s*(?:number|numero)?\s*([0-9]{10,20})",
-                "rib": r"(?:RIB|RIP)\s*([0-9]{20,23})",
-                "amount": r"(?:amount|montant|somme)\s*(?:of|de)?\s*([0-9,.\s]+)\s*(?:DA|DZD|dinars?)",
-                "transaction_id": r"(?:transaction|operation)\s*(?:id|numero)?\s*([A-Z0-9]{6,20})"
-            },
-            "complaint": {
-                "issue_type": r"(?:problem|problème|issue|souci)\s*(?:with|avec|is|est)\s*([A-Za-z\s]+)",
-                "description": r"(?:describe|décrire|explain|expliquer)\s*(?:the)?\s*([A-Za-z0-9\s,.!?-]{20,200})",
-                "urgency": r"(?:urgent|priority|priorité|emergency|urgence)",
-                "previous_contact": r"(?:called|appelé|contacted|contacté)\s*(?:before|avant|already|déjà)"
-            },
-            "service_request": {
-                "service_type": r"(?:need|besoin|want|veux|request|demande)\s*(?:to|de)?\s*([A-Za-z\s]+)",
-                "appointment": r"(?:appointment|rendez-vous)\s*(?:on|le)?\s*([0-9]{1,2}[\/\-][0-9]{1,2}[\/\-][0-9]{2,4})",
-                "branch": r"(?:branch|agence|office|bureau)\s*(?:of|de|in|à)?\s*([A-Za-z\s]+)"
-            }
+            "phone": r"(?:\+?1[-.\s]?)?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})",
+            "email": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
+            "account_number": r"\b(?:account|compte)\s*(?:number|numéro)?\s*:?\s*([A-Z0-9]{8,12})\b",
+            "transaction_id": r"\b(?:transaction|trans)\s*(?:id|number)?\s*:?\s*([A-Z0-9]{10,20})\b",
+            "amount": r"\b(?:€|EUR|DA|DZD)?\s*([0-9,]+\.?[0-9]*)\s*(?:€|EUR|DA|DZD)?\b",
+            "date": r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b",
+            "card_number": r"\b(?:carte|card)\s*(?:number|numéro)?\s*:?\s*([0-9]{4}[-\s]*[0-9]{4}[-\s]*[0-9]{4}[-\s]*[0-9]{4})\b"
         }
     
-    def load_form_templates(self) -> Dict[str, Dict[str, Any]]:
-        """Load form templates for different types of requests"""
-        return {
-            "customer_information": {
-                "fields": ["name", "phone", "email", "address", "cin", "age"],
-                "required": ["name", "phone"],
-                "validation": {
-                    "phone": r"^[0-9\s\-\+\(\)]{8,15}$",
-                    "email": r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
-                    "cin": r"^[0-9]{8}$"
-                }
-            },
-            "banking_request": {
-                "fields": ["account_number", "rib", "amount", "transaction_id", "service_type"],
-                "required": ["account_number"],
-                "validation": {
-                    "account_number": r"^[0-9]{10,20}$",
-                    "rib": r"^[0-9]{20,23}$"
-                }
-            },
-            "complaint_form": {
-                "fields": ["issue_type", "description", "urgency", "previous_contact"],
-                "required": ["issue_type", "description"],
-                "validation": {}
-            },
-            "service_request": {
-                "fields": ["service_type", "appointment", "branch"],
-                "required": ["service_type"],
-                "validation": {
-                    "appointment": r"^[0-9]{1,2}[\/\-][0-9]{1,2}[\/\-][0-9]{2,4}$"
-                }
-            }
-        }
-    
-    async def extract_information(self, event: Event):
-        """Extract structured information from completed transcript"""
+    async def handle_transcript(self, event: Event):
+        """Handle call transcript for data extraction"""
         call_id = event.data.get("call_id")
         transcript = event.data.get("transcript", "")
-        caller_phone = event.data.get("caller_phone", "")
         
-        logger.info(f"Extracting information from call {call_id}")
+        logger.info(f"Processing transcript for call {call_id}")
         
-        # Extract information using patterns
-        extracted_data = self.extract_from_text(transcript)
+        # Extract structured data from transcript
+        extracted_data = self.extract_data_from_transcript(transcript)
         
-        # Determine form type based on extracted data
-        form_type = self.determine_form_type(extracted_data)
-        
-        # Validate and structure the data
-        structured_data = self.structure_data(extracted_data, form_type)
-        
-        # Store extracted data
+        # Update call record with extracted data
         call = self.db.query(Call).filter(Call.id == call_id).first()
         if call:
-            call.summary = json.dumps(structured_data, ensure_ascii=False, indent=2)
-            self.db.commit()
-        
-        # Publish data extraction event
-        await event_bus.publish(Event(
-            type="data_extracted",
-            data={
-                "call_id": call_id,
-                "caller_phone": caller_phone,
-                "extracted_data": structured_data,
-                "form_type": form_type,
-                "confidence": self.calculate_confidence(structured_data)
-            },
-            timestamp=datetime.utcnow(),
-            correlation_id=f"data_extract_{call_id}"
-        ))
-        
-        logger.info(f"Data extraction completed for call {call_id}: {form_type}")
-    
-    def extract_from_text(self, text: str) -> Dict[str, Any]:
-        """Extract information from text using regex patterns"""
-        extracted = {}
-        text_lower = text.lower()
-        
-        for category, patterns in self.extraction_patterns.items():
-            extracted[category] = {}
+            call.transcript = transcript
             
-            for field, pattern in patterns.items():
-                matches = re.findall(pattern, text_lower, re.IGNORECASE | re.MULTILINE)
-                if matches:
-                    # Take the first match and clean it up
-                    value = matches[0].strip()
-                    extracted[category][field] = value
+            # Store extracted data as JSON in summary field for now
+            # In production, you'd have dedicated fields or related tables
+            call.summary = json.dumps(extracted_data, ensure_ascii=False)
+            self.db.commit()
+            
+            # Publish data extraction event
+            await event_bus.publish(Event(
+                type="data_extracted",
+                data={
+                    "call_id": call_id,
+                    "extracted_data": extracted_data,
+                    "fields_found": len(extracted_data)
+                },
+                timestamp=datetime.utcnow(),
+                correlation_id=f"extract_{call_id}"
+            ))
+            
+            logger.info(f"Extracted {len(extracted_data)} data fields from call {call_id}")
+    
+    def extract_data_from_transcript(self, transcript: str) -> Dict[str, Any]:
+        """Extract structured data from transcript using NLP and regex"""
+        extracted = {}
+        
+        # Apply regex patterns
+        for field_name, pattern in self.extraction_patterns.items():
+            matches = re.findall(pattern, transcript, re.IGNORECASE)
+            if matches:
+                if field_name == "phone":
+                    # Join phone number parts
+                    extracted[field_name] = [f"({match[0]}) {match[1]}-{match[2]}" for match in matches]
+                else:
+                    extracted[field_name] = matches
+        
+        # Extract customer information using keyword matching
+        customer_info = self.extract_customer_info(transcript)
+        if customer_info:
+            extracted.update(customer_info)
+        
+        # Extract issue/request type
+        issue_type = self.classify_issue_type(transcript)
+        if issue_type:
+            extracted["issue_type"] = issue_type
+        
+        # Extract resolution status
+        resolution = self.extract_resolution_status(transcript)
+        if resolution:
+            extracted["resolution"] = resolution
         
         return extracted
     
-    def determine_form_type(self, extracted_data: Dict[str, Any]) -> str:
-        """Determine the most appropriate form type based on extracted data"""
-        scores = {}
+    def extract_customer_info(self, transcript: str) -> Dict[str, str]:
+        """Extract customer information from transcript"""
+        info = {}
         
-        for form_type, template in self.form_templates.items():
-            score = 0
-            for field in template["fields"]:
-                # Check if field exists in any category
-                for category_data in extracted_data.values():
-                    if field in category_data:
-                        score += 2 if field in template["required"] else 1
-            
-            scores[form_type] = score
+        # Name patterns
+        name_patterns = [
+            r"(?:my name is|je suis|I am)\s+([A-Za-z\s]+)",
+            r"(?:customer|client)\s+name\s*:?\s*([A-Za-z\s]+)",
+        ]
         
-        # Return the form type with highest score
-        if scores:
-            return max(scores, key=scores.get)
+        for pattern in name_patterns:
+            match = re.search(pattern, transcript, re.IGNORECASE)
+            if match:
+                info["customer_name"] = match.group(1).strip()
+                break
         
-        return "customer_information"  # Default
+        # Address patterns
+        address_patterns = [
+            r"(?:address|adresse)\s*:?\s*([^.!?]+)",
+            r"(?:I live at|j'habite à)\s+([^.!?]+)"
+        ]
+        
+        for pattern in address_patterns:
+            match = re.search(pattern, transcript, re.IGNORECASE)
+            if match:
+                info["address"] = match.group(1).strip()
+                break
+        
+        return info
     
-    def structure_data(self, extracted_data: Dict[str, Any], form_type: str) -> Dict[str, Any]:
-        """Structure extracted data according to form template"""
-        template = self.form_templates.get(form_type, self.form_templates["customer_information"])
-        structured = {
-            "form_type": form_type,
-            "timestamp": datetime.utcnow().isoformat(),
-            "fields": {},
-            "validation_errors": [],
-            "completion_status": "partial"
+    def classify_issue_type(self, transcript: str) -> Optional[str]:
+        """Classify the type of issue/request from transcript"""
+        issue_keywords = {
+            "carte_bloquée": ["carte bloquée", "card blocked", "blocked card", "carte ne marche pas"],
+            "transaction_échouée": ["transaction failed", "paiement échoué", "payment failed", "transaction échouée"],
+            "solde_insuffisant": ["insufficient funds", "solde insuffisant", "pas assez d'argent"],
+            "fraude": ["fraud", "fraude", "suspicious transaction", "transaction suspecte"],
+            "activation_carte": ["activate card", "activer carte", "nouvelle carte"],
+            "changement_pin": ["change pin", "changer code", "forgot pin", "code oublié"],
+            "demande_relevé": ["statement", "relevé", "historique", "transactions history"]
         }
         
-        # Flatten extracted data
-        flat_data = {}
-        for category_data in extracted_data.values():
-            flat_data.update(category_data)
+        transcript_lower = transcript.lower()
         
-        # Map fields according to template
-        for field in template["fields"]:
-            if field in flat_data:
-                value = flat_data[field]
-                
-                # Validate field if validation pattern exists
-                validation_pattern = template["validation"].get(field)
-                if validation_pattern:
-                    if not re.match(validation_pattern, value):
-                        structured["validation_errors"].append({
-                            "field": field,
-                            "value": value,
-                            "error": "Invalid format"
-                        })
-                        continue
-                
-                structured["fields"][field] = self.clean_field_value(field, value)
+        for issue_type, keywords in issue_keywords.items():
+            for keyword in keywords:
+                if keyword.lower() in transcript_lower:
+                    return issue_type
         
-        # Check completion status
-        required_fields = template["required"]
-        completed_required = sum(1 for field in required_fields if field in structured["fields"])
-        
-        if completed_required == len(required_fields):
-            structured["completion_status"] = "complete"
-        elif completed_required > 0:
-            structured["completion_status"] = "partial"
-        else:
-            structured["completion_status"] = "minimal"
-        
-        return structured
+        return None
     
-    def clean_field_value(self, field: str, value: str) -> str:
-        """Clean and format field values"""
-        value = value.strip()
-        
-        if field == "phone":
-            # Normalize phone number
-            value = re.sub(r'[^\d\+]', '', value)
-            if value.startswith('0'):
-                value = '+213' + value[1:]
-        
-        elif field == "email":
-            value = value.lower()
-        
-        elif field == "name":
-            value = value.title()
-        
-        elif field == "amount":
-            # Extract numeric value
-            value = re.sub(r'[^\d,.]', '', value)
-        
-        return value
-    
-    def calculate_confidence(self, structured_data: Dict[str, Any]) -> float:
-        """Calculate confidence score for extracted data"""
-        total_fields = len(structured_data.get("fields", {}))
-        errors = len(structured_data.get("validation_errors", []))
-        completion = structured_data.get("completion_status", "minimal")
-        
-        if total_fields == 0:
-            return 0.0
-        
-        base_score = min(total_fields / 5.0, 1.0)  # Up to 5 fields = 100%
-        error_penalty = errors * 0.1
-        
-        completion_bonus = {
-            "complete": 0.2,
-            "partial": 0.1,
-            "minimal": 0.0
-        }.get(completion, 0.0)
-        
-        confidence = max(0.0, min(1.0, base_score - error_penalty + completion_bonus))
-        return round(confidence, 2)
-    
-    async def process_real_time_data(self, event: Event):
-        """Process data in real-time as transcript chunks arrive"""
-        call_id = event.data.get("call_id")
-        chunk = event.data.get("chunk", {})
-        text = chunk.get("text", "")
-        
-        # Extract information from this chunk
-        extracted = self.extract_from_text(text)
-        
-        # If we found something important, publish an event
-        if any(extracted.values()):
-            await event_bus.publish(Event(
-                type="real_time_data_found",
-                data={
-                    "call_id": call_id,
-                    "chunk_data": extracted,
-                    "timestamp": chunk.get("timestamp")
-                },
-                timestamp=datetime.utcnow(),
-                correlation_id=f"realtime_{call_id}"
-            ))
-    
-    async def handle_form_submission(self, event: Event):
-        """Handle form submission requests"""
-        call_id = event.data.get("call_id")
-        form_data = event.data.get("form_data", {})
-        destination = event.data.get("destination", "crm")
-        
-        logger.info(f"Submitting form for call {call_id} to {destination}")
-        
-        # Validate form data
-        validation_result = self.validate_form_data(form_data)
-        
-        if validation_result["valid"]:
-            # Submit to appropriate system
-            submission_result = await self.submit_to_system(form_data, destination)
-            
-            await event_bus.publish(Event(
-                type="form_submitted",
-                data={
-                    "call_id": call_id,
-                    "destination": destination,
-                    "success": submission_result["success"],
-                    "reference": submission_result.get("reference"),
-                    "errors": submission_result.get("errors", [])
-                },
-                timestamp=datetime.utcnow(),
-                correlation_id=f"submit_{call_id}"
-            ))
-        else:
-            await event_bus.publish(Event(
-                type="form_validation_failed",
-                data={
-                    "call_id": call_id,
-                    "validation_errors": validation_result["errors"]
-                },
-                timestamp=datetime.utcnow(),
-                correlation_id=f"validation_fail_{call_id}"
-            ))
-    
-    def validate_form_data(self, form_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate form data before submission"""
-        errors = []
-        form_type = form_data.get("form_type", "customer_information")
-        template = self.form_templates.get(form_type, {})
-        
-        # Check required fields
-        required_fields = template.get("required", [])
-        for field in required_fields:
-            if field not in form_data.get("fields", {}):
-                errors.append(f"Required field '{field}' is missing")
-        
-        # Validate field formats
-        validation_rules = template.get("validation", {})
-        fields = form_data.get("fields", {})
-        
-        for field, value in fields.items():
-            if field in validation_rules:
-                pattern = validation_rules[field]
-                if not re.match(pattern, str(value)):
-                    errors.append(f"Field '{field}' has invalid format")
-        
-        return {
-            "valid": len(errors) == 0,
-            "errors": errors
+    def extract_resolution_status(self, transcript: str) -> Optional[str]:
+        """Extract resolution status from transcript"""
+        resolution_keywords = {
+            "résolu": ["resolved", "fixed", "résolu", "corrigé", "problem solved"],
+            "en_cours": ["in progress", "en cours", "working on it", "nous vérifions"],
+            "escaladé": ["escalated", "escaladé", "transferred", "transféré"],
+            "non_résolu": ["unresolved", "non résolu", "couldn't help", "pas pu aider"]
         }
+        
+        transcript_lower = transcript.lower()
+        
+        for status, keywords in resolution_keywords.items():
+            for keyword in keywords:
+                if keyword.lower() in transcript_lower:
+                    return status
+        
+        return None
     
-    async def submit_to_system(self, form_data: Dict[str, Any], destination: str) -> Dict[str, Any]:
-        """Submit form data to external system"""
-        try:
-            # This would integrate with actual CRM/ERP systems
-            # For now, we'll simulate submission
+    async def finalize_data_entry(self, event: Event):
+        """Finalize data entry when call ends"""
+        call_id = event.data.get("call_id")
+        
+        call = self.db.query(Call).filter(Call.id == call_id).first()
+        if call and call.summary:
+            try:
+                extracted_data = json.loads(call.summary)
+                
+                # Validate and clean extracted data
+                validated_data = self.validate_extracted_data(extracted_data)
+                
+                # Update with validated data
+                call.summary = json.dumps(validated_data, ensure_ascii=False)
+                
+                # Mark call as resolved if resolution was found
+                if validated_data.get("resolution") == "résolu":
+                    call.resolved = True
+                
+                self.db.commit()
+                
+                # Publish completion event
+                await event_bus.publish(Event(
+                    type="data_entry_completed",
+                    data={
+                        "call_id": call_id,
+                        "validated_data": validated_data,
+                        "resolved": call.resolved
+                    },
+                    timestamp=datetime.utcnow(),
+                    correlation_id=f"complete_{call_id}"
+                ))
+                
+                logger.info(f"Data entry finalized for call {call_id}")
+                
+            except json.JSONDecodeError:
+                logger.error(f"Invalid JSON in call summary for call {call_id}")
+    
+    def validate_extracted_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and clean extracted data"""
+        validated = {}
+        
+        for key, value in data.items():
+            if key == "phone" and isinstance(value, list):
+                # Validate phone numbers
+                valid_phones = []
+                for phone in value:
+                    if len(re.sub(r'[^\d]', '', phone)) == 10:  # US format
+                        valid_phones.append(phone)
+                if valid_phones:
+                    validated[key] = valid_phones
             
-            if destination == "crm":
-                return await self.submit_to_crm(form_data)
-            elif destination == "banking":
-                return await self.submit_to_banking_system(form_data)
-            elif destination == "complaint":
-                return await self.submit_to_complaint_system(form_data)
+            elif key == "email" and isinstance(value, list):
+                # Validate emails
+                valid_emails = []
+                for email in value:
+                    if "@" in email and "." in email:
+                        valid_emails.append(email.lower())
+                if valid_emails:
+                    validated[key] = valid_emails
+            
+            elif key == "amount" and isinstance(value, list):
+                # Clean and validate amounts
+                valid_amounts = []
+                for amount in value:
+                    cleaned_amount = re.sub(r'[^\d.,]', '', str(amount))
+                    if cleaned_amount:
+                        valid_amounts.append(cleaned_amount)
+                if valid_amounts:
+                    validated[key] = valid_amounts
+            
             else:
-                return {"success": False, "errors": ["Unknown destination system"]}
-                
-        except Exception as e:
-            logger.error(f"Error submitting form to {destination}: {e}")
-            return {"success": False, "errors": [str(e)]}
-    
-    async def submit_to_crm(self, form_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Submit to CRM system"""
-        # Simulate CRM submission
-        reference = f"CRM_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-        return {
-            "success": True,
-            "reference": reference,
-            "message": "Customer information updated successfully"
-        }
-    
-    async def submit_to_banking_system(self, form_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Submit to banking system"""
-        # Simulate banking system submission
-        reference = f"BANK_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-        return {
-            "success": True,
-            "reference": reference,
-            "message": "Banking request processed successfully"
-        }
-    
-    async def submit_to_complaint_system(self, form_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Submit to complaint management system"""
-        # Simulate complaint system submission
-        reference = f"COMP_{datetime.utcnow().strftime('%Y%m%d_%H
+                validated[key] = value
+        
+        return validated
