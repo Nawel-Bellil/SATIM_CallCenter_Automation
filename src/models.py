@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, ARRAY, Float
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Float, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -14,7 +14,7 @@ class Agent(Base):
     name = Column(String(100), nullable=False)
     email = Column(String(100), unique=True, nullable=False)
     status = Column(String(20), default="available")
-    skills = Column(ARRAY(String))
+    skills = Column(JSON, default=list)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     calls = relationship("Call", back_populates="agent")
