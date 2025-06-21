@@ -1,17 +1,21 @@
+"""Database configuration"""
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
-import os
-from dotenv import load_dotenv
+from .models import Base
 
-load_dotenv()
+# SQLite database for development
+DATABASE_URL = "sqlite:///./satim_callcenter.db"
 
-DATABASE_URL = "sqlite:///./satim.db"
-
-engine = create_engine(DATABASE_URL,connect_args={"check_same_thread": False} )
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+def create_tables():
+    """Create all database tables"""
+    Base.metadata.create_all(bind=engine)
+    print("✅ Database tables created")
+
 def get_db():
+    """Get database session"""
     db = SessionLocal()
     try:
         yield db

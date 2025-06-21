@@ -1,204 +1,53 @@
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
+"""FastAPI main application"""
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+
+from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
-import uvicorn
+from src.database import get_db, create_tables
+from src.agents.call_routing import CallRouter
+from src.agents.faq_bot import FAQBot
+from src.orchestration.event_bus import event_bus, Event
+
 from datetime import datetime
 import asyncio
 
-from ..database import get_db, engine
-from ..models import Base, Agent, Call, FAQ, AgentCreate, AgentResponse, CallCreate, CallResponse, FAQCreate, FAQResponse
-from ..agents.call_routing import CallRouter
-from ..agents.faq_bot import FAQBot
-from ..orchestration.event_bus import event_bus, Event
+app = FastAPI(title="SATIM Call Center API", version="1.0.0")
 
-# Create tables
-Base.metadata.create_all(bind=engine)
-
-app = FastAPI(title="SATIM Call Center Automation API", version="1.0.0")
-
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Initialize components
+# Initialize on startup
 @app.on_event("startup")
 async def startup_event():
-    """Initialize system components on startup"""
-    print("Starting SATIM Call Center Automation System...")
+    create_tables()
+    print("🚀 SATIM Call Center API Started")
 
-# Agent endpoints
-@app.post("/agents/", response_model=AgentResponse)
-def create_agent(agent: AgentCreate, db: Session = Depends(get_db)):
-    db_agent = Agent(**agent.dict())
-    db.add(db_agent)
-    db.commit()
-    db.refresh(db_agent)
-    return db_agent
+@app.get("/")
+async def root():
+    return {"message": "SATIM Call Center API", "status": "running"}
 
-@app.get("/agents/", response_model=List[AgentResponse])
-def get_agents(db: Session = Depends(get_db)):
-    return db.query(Agent).all()
-
-@app.get("/agents/{agent_id}", response_model=AgentResponse)
-def get_agent(agent_id: int, db: Session = Depends(get_db)):
-    agent = db.query(Agent).filter(Agent.id == agent_id).first()
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    return agent
-
-@app.put("/agents/{agent_id}/status")
-async def update_agent_status(agent_id: int, status: str, db: Session = Depends(get_db)):
-    agent = db.query(Agent).filter(Agent.id == agent_id).first()
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    
-    old_status = agent.status
-    agent.status = status
-    db.commit()
-    
-    # Publish status change event
-    await event_bus.publish(Event(
-        type="agent_status_changed",
-        data={"agent_id": agent_id, "old_status": old_status, "status": status},
-        timestamp=datetime.utcnow(),
-        correlation_id=f"agent_{agent_id}"
-    ))
-    
-    return {"message": "Status updated successfully"}
-
-# Call endpoints
-@app.post("/calls/incoming")
-async def incoming_call(caller_phone: str, priority: int = 1, db: Session = Depends(get_db)):
+@app.post("/call/incoming")
+async def incoming_call(caller_phone: str, priority: int = 1):
     """Handle incoming call"""
     await event_bus.publish(Event(
         type="call_incoming",
         data={"caller_phone": caller_phone, "priority": priority},
-        timestamp=datetime.utcnow(),
-        correlation_id=f"incoming_{caller_phone}"
+        timestamp=datetime.utcnow()
     ))
-    
-    return {"message": "Call received and being processed"}
+    return {"status": "call_received", "caller_phone": caller_phone}
 
-@app.get("/calls/", response_model=List[CallResponse])
-def get_calls(db: Session = Depends(get_db)):
-    return db.query(Call).all()
-
-@app.post("/calls/{call_id}/end")
-async def end_call(call_id: int, db: Session = Depends(get_db)):
-    call = db.query(Call).filter(Call.id == call_id).first()
-    if not call:
-        raise HTTPException(status_code=404, detail="Call not found")
-    
-    await event_bus.publish(Event(
-        type="call_ended",
-        data={"call_id": call_id, "agent_id": call.agent_id},
-        timestamp=datetime.utcnow(),
-        correlation_id=f"call_{call_id}"
-    ))
-    
-    return {"message": "Call ended successfully"}
-
-# FAQ endpoints
-@app.post("/faqs/", response_model=FAQResponse)
-def create_faq(faq: FAQCreate, db: Session = Depends(get_db)):
-    db_faq = FAQ(**faq.dict())
-    db.add(db_faq)
-    db.commit()
-    db.refresh(db_faq)
-    return db_faq
-
-@app.get("/faqs/", response_model=List[FAQResponse])
-def get_faqs(db: Session = Depends(get_db)):
-    return db.query(FAQ).all()
-
-@app.post("/faqs/ask")
-async def ask_question(question: str, caller_phone: str, call_id: int = None, db: Session = Depends(get_db)):
-    """Ask a question to the FAQ bot"""
+@app.post("/faq/ask")
+async def ask_question(question: str, caller_phone: str = None):
+    """Ask FAQ question"""
     await event_bus.publish(Event(
         type="question_asked",
-        data={
-            "question": question,
-            "caller_phone": caller_phone,
-            "call_id": call_id
-        },
-        timestamp=datetime.utcnow(),
-        correlation_id=f"question_{call_id or caller_phone}"
+        data={"question": question, "caller_phone": caller_phone},
+        timestamp=datetime.utcnow()
     ))
-    
-    return {"message": "Question received and being processed"}
+    return {"status": "question_received", "question": question}
 
-@app.get("/faqs/stats")
-def get_faq_stats(db: Session = Depends(get_db)):
-    """Get FAQ usage statistics"""
-    faq_bot = FAQBot(db)
-    return faq_bot.get_faq_stats()
-
-# Queue and dashboard endpoints
-@app.get("/queue/status")
-def get_queue_status(db: Session = Depends(get_db)):
-    """Get current queue status"""
-    from ..models import CallQueue
-    
-    queue_items = db.query(CallQueue).filter(
-        CallQueue.assigned_agent_id.is_(None)
-    ).order_by(CallQueue.priority.desc(), CallQueue.created_at.asc()).all()
-    
-    return {
-        "queue_length": len(queue_items),
-        "queue_items": [
-            {
-                "id": item.id,
-                "caller_phone": item.caller_phone,
-                "priority": item.priority,
-                "wait_time": (datetime.utcnow() - item.created_at).total_seconds(),
-                "position": idx + 1
-            }
-            for idx, item in enumerate(queue_items)
-        ]
-    }
-
-@app.get("/dashboard/stats")
-def get_dashboard_stats(db: Session = Depends(get_db)):
-    """Get dashboard statistics"""
-    from sqlalchemy import func
-    from ..models import CallQueue
-    
-    # Agent statistics
-    total_agents = db.query(Agent).count()
-    available_agents = db.query(Agent).filter(Agent.status == "available").count()
-    busy_agents = db.query(Agent).filter(Agent.status == "busy").count()
-    
-    # Call statistics
-    active_calls = db.query(Call).filter(Call.status == "active").count()
-    completed_calls = db.query(Call).filter(Call.status == "completed").count()
-    
-    # Queue statistics
-    queue_length = db.query(CallQueue).filter(CallQueue.assigned_agent_id.is_(None)).count()
-    
-    # Average call duration
-    avg_duration = db.query(func.avg(Call.duration)).filter(Call.duration.isnot(None)).scalar() or 0
-    
-    return {
-        "agents": {
-            "total": total_agents,
-            "available": available_agents,
-            "busy": busy_agents
-        },
-        "calls": {
-            "active": active_calls,
-            "completed": completed_calls,
-            "average_duration": round(avg_duration, 2)
-        },
-        "queue": {
-            "length": queue_length
-        }
-    }
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": datetime.utcnow()}
 
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
