@@ -9,16 +9,17 @@ Base = declarative_base()
 
 class Agent(Base):
     __tablename__ = "agents"
-    
-    id = Column(Integer, primary_key=True, index=True)
+
+    id = Column(Integer, primary_key=True, index=True)  # 👈 REQUIRED!
     name = Column(String(100), nullable=False)
     email = Column(String(100), unique=True, nullable=False)
+    phone = Column(String(20), nullable=True)
     status = Column(String(20), default="available")
-    skills = Column(JSON, default=list)  # ✅ MUST be JSON, not ARRAY!
+    skills = Column(JSON, default=list)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     calls = relationship("Call", back_populates="agent")
-    
+
 class Call(Base):
     __tablename__ = "calls"
     
