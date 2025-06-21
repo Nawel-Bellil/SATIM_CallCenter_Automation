@@ -34,6 +34,7 @@ The system follows a modular, event-driven design:
 - **EventBus**: Facilitates communication via publish-subscribe events (e.g., `call_incoming`, `question_asked`).
 - **Database**: SQLite (development) stores agents, calls, queues, and FAQs.
 - **API**: FastAPI provides endpoints like `/health`, `/call/incoming`, and `/faq/ask`.
+![image](https://github.com/user-attachments/assets/91488757-ace8-49f1-bfd3-287446c8ed90)
 
 ## Technologies
 - **Python 3.x**: Core programming language.
